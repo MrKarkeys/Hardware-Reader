@@ -1,0 +1,5 @@
+# --- CMake Build System ---
+build/
+
+# --- IDE & Editor Settings ---
+.vscode/
