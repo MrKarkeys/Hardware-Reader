@@ -8,9 +8,12 @@
 #include <unistd.h>  // For gethostname() and getlogin(), Access to POSIX OS API functions
 
 #include <cstdint>
+#include <cstdio>  //popen and pclose
+#include <cstdlib>
 #include <format>
 #include <fstream>  // For reading files like /proc/cpuinfo
 #include <iostream>
+#include <memory>  // unique_pointer
 #include <string>
 #include <vector>
 
@@ -23,13 +26,11 @@ HardwareReader::HardwareReader() {
     get_kernel_type();
     get_uptime();
     get_shell_type();
-    get_screen_res();
     get_desktop_env();
-    get_window_manager();
-    get_window_manager_theme();
     get_terminal();
     get_cpu_model();
     get_gpu_model();
+    get_memory();
 }
 
 // Display: Prints the gathered data
@@ -42,10 +43,7 @@ void HardwareReader::display_hardware_info() {
     std::cout << "Kernel:     " << kernel_type << std::endl;
     std::cout << "Uptime:     " << uptime << std::endl;
     std::cout << "Shell       " << shell_type << std::endl;
-    std::cout << "Screen      " << screen_res << std::endl;
     std::cout << "DE:         " << desktop_env << std::endl;
-    std::cout << "WM:         " << window_manager << std::endl;
-    std::cout << "WM Theme    " << window_manager_theme << std::endl;
     std::cout << "Terminal    " << terminal << std::endl;
     std::cout << "CPU:        " << cpu_model << std::endl;
 
@@ -55,6 +53,9 @@ void HardwareReader::display_hardware_info() {
         std::cout << gpu << std::endl;
         gpu_count++;
     }
+
+    std::cout << "Memory:     " << memory << std::endl;
+
     std::cout << std::endl;
 }
 
@@ -143,22 +144,101 @@ void HardwareReader::get_uptime() {
     }
 }
 
-void HardwareReader::get_shell_type() { shell_type = "unknown"; }
+void HardwareReader::get_shell_type() {
+    const char* shell_path = std::getenv("SHELL");
 
-void HardwareReader::get_screen_res() { screen_res = "unknown"; }
-
-void HardwareReader::get_desktop_env() { desktop_env = "unknown"; }
-
-void HardwareReader::get_window_manager() { window_manager = "unknown"; }
-
-void HardwareReader::get_window_manager_theme() {
-    window_manager_theme = "unknown";
+    if (shell_path != nullptr) {
+        std::string full_path(shell_path);
+        size_t last_slash = full_path.find_last_of('/');
+        if (last_slash != std::string::npos) {
+            shell_type = full_path.substr(last_slash + 1);
+        } else {
+            shell_type = full_path;
+        }
+    } else {
+        shell_type = "Unknown";
+    }
 }
 
-void HardwareReader::get_terminal() { terminal = "unknown"; }
+void HardwareReader::get_desktop_env() {
+    const char* de = std::getenv("XDG_CURRENT_DESKTOP");
 
-void HardwareReader::get_cpu_model() { cpu_model = "unknown"; }
+    if (de != nullptr) {
+        desktop_env = std::string(de);
+        size_t last_colon = desktop_env.find_last_of(':');
+        if (last_colon != std::string::npos) {
+            desktop_env = desktop_env.substr(last_colon + 1);
+        }
+    } else {
+        desktop_env = "unknown";
+    }
+}
 
-void HardwareReader::get_gpu_model() { gpu_model = {"unknown"}; }
+void HardwareReader::get_terminal() {
+    const char* term = std::getenv("TERM_PROGRAM");
+    if (term != nullptr) {
+        terminal = term;
+    } else {
+        terminal = "unknown";
+    }
+}
+
+void HardwareReader::get_cpu_model() {
+    std::ifstream cpu_file("/proc/cpuinfo");
+    std::string line;
+
+    if (cpu_file.is_open()) {
+        while (std::getline(cpu_file, line)) {
+            if (line.find("model name") != std::string::npos) {
+                size_t colon_pos = line.find(':');
+                if (colon_pos != std::string::npos) {
+                    cpu_model = line.substr(colon_pos + 2);
+                    break;
+                }
+            }
+        }
+    } else {
+        cpu_model = "unknown";
+    }
+}
+
+// credits to https://github.com/dylanaraps/neofetch/blob/master/neofetch
+void HardwareReader::get_gpu_model() {
+    const std::string command =
+        R"(lspci -mm | awk -F '"|" "|\\(' '/"Display|"3D|"VGA/ { a[$0] = $1 " " $3 " " ($(NF-1) ~ /^$|^Device [[:xdigit:]]+$/ ? $4 : $(NF-1)) } END { for (i in a) { if (!seen[a[i]]++) { sub("^[^ ]+ ", "", a[i]); print a[i] }}}')";
+
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(
+        popen(command.c_str(), "r"),
+        pclose);  // smart pointer use pclose to close properly
+
+    if (!pipe) {
+        gpu_model = {"error"};
+        return;
+    }
+
+    char buffer[256];
+    gpu_model.clear();
+
+    while (fgets(buffer, sizeof(buffer), pipe.get()) != nullptr) {
+        std::string line = buffer;
+        line.erase(line.find_last_not_of("\n") + 1);
+        gpu_model.push_back(line.substr(1));
+    }
+
+    if (gpu_model.empty()) {
+        gpu_model = {"unknown"};
+    }
+}
+
+void HardwareReader::get_memory() {
+    struct sysinfo info;
+
+    if (sysinfo(&info) == 0) {
+        unsigned long total_mib = (info.totalram * info.mem_unit) / 1024 / 1024;
+        memory = std::to_string(total_mib) + " MiB";
+    } else {
+        memory = "unknown";
+    }
+}
 
 }  // namespace hardware_fetch
